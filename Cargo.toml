@@ -1,0 +1,34 @@
+[package]
+name = "Pratt"
+authors = ["Robert Jacobson <rljacobson@gmail>"]
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+string-interner = "0.14.0"
+strum           = "0.24"  # Derives for Display, IntoStaticStr for `*Kind`-
+strum_macros    = "0.24"  # style enums.
+regex           = "1.6.0" # Lexer
+aho-corasick    = "0.7.19"# Lexer
+lazy_static     = "1.4.0" # Used in logger.
+yansi           = "0.5.1" # ANSI color support for logging to terminal.
+fnv             = "1.0.7" # FNV-1a hash for fast expression equality checking.
+
+# Arbitrary Precision Library
+# Uses:
+#   GMP  for integers and rational numbers,
+#   MPFR for floating-point numbers, and
+#   MPC  for complex numbers.
+[dependencies.rug]
+version = "1.17"
+default-features = false
+features = [
+    "integer",
+    "float",
+    "rational",
+#    "complex",
+#    "rand",
+#    "serde"
+]
