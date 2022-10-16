@@ -6,12 +6,12 @@ Minimalist lexer.
 
 use std::{
   fmt::{Display, Formatter},
-  iter::{Filter, Peekable},
   cmp::min
 };
+use std::iter::Peekable;
 
 use lazy_static::lazy_static;
-use aho_corasick::{AhoCorasickBuilder, AhoCorasick, MatchKind, FindIter};
+use aho_corasick::{AhoCorasickBuilder, AhoCorasick, MatchKind};
 use regex::{
   Regex,
   Match as RegexMatch
@@ -22,10 +22,13 @@ use rug::{
   ops::{CompleteRound},
   Complete
 };
+use strum_macros::AsRefStr;
 
 use crate::{
   atom::Atom,
-  context::{
+  interner::{
+    interned,
+    resolve_str,
     InternedString
   }
 };
@@ -33,6 +36,15 @@ use crate::{
 /*
 To have dynamic lexing of operators, the lexer needs facilities for adding and removing operators.
 */
+
+/// We want the Lexer to be peekable.
+pub type Lexer<'t> = Peekable<LexerCore<'t>>;
+
+// Todo: This free function is a little awkward.
+pub fn new_lexer(input: &str) -> Lexer {
+  LexerCore::new(input).peekable()
+}
+
 
 // Keep in sync with numbering in `TOKENS`.
 const STRING_LITERAL_IDX: usize = 0;
@@ -43,7 +55,7 @@ const EOL_COMMENT_IDX   : usize = 4;
 const WHITESPACE_IDX    : usize = 5;
 
 lazy_static! {
-  pub static ref REGEXES: &'static [Regex; 6] = &[
+  pub static ref REGEXES: [Regex; 6] = [
     Regex::new(r#""(?:[^"]|\\")*""#).unwrap(),    //  0. StringLiteral  todo: Make strings more sophisticated.
     Regex::new(r"[0-9]+\.[0-9]+").unwrap(),       //  1. Real
     Regex::new(r"[0-9]+").unwrap(),               //  2. Integer
@@ -53,7 +65,7 @@ lazy_static! {
   ];
 }
 
-static TOKENS: &[&'static str; 26] = &[
+static TOKENS: [&'static str; 26] = [
   r"___", //  6. BlankSequence
   r"==",  //  7. SameQ
   r"^=",  //  8. UpSet
@@ -84,7 +96,7 @@ static TOKENS: &[&'static str; 26] = &[
 
 
 // The Lexer supplies `Token` variants to the client code.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, AsRefStr)]
 pub enum Token {
   Integer(BigInteger),
   Operator(InternedString),
@@ -96,7 +108,26 @@ pub enum Token {
 
 impl Display for Token {
   fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-    write!(f, "{:?}", self)
+    match self {
+      Token::Integer(v) => {
+        write!(f, "{}({})", self.as_ref(), v)
+      }
+      Token::Operator(v) => {
+        write!(f, "{}({})", self.as_ref(), resolve_str(*v))
+      }
+      Token::Real(v) => {
+        write!(f, "{}({})", self.as_ref(), v)
+      }
+      Token::String(v) => {
+        write!(f, "{}(\"{}\")", self.as_ref(), resolve_str(*v))
+      }
+      Token::Symbol(v) => {
+        write!(f, "{}({})", self.as_ref(), resolve_str(*v))
+      }
+      Token::Error(v) => {
+        write!(f, "{}({})", self.as_ref(), v)
+      }
+    }
   }
 }
 
@@ -117,26 +148,24 @@ impl Token {
   }
 }
 
-/// This is just `matcher.find_iter(text).filter(…).peekable()`
-// pub type MatchIterator<'t> = Peekable<Filter<FindIter<'t, 't, usize>, fn(&Match) -> bool>>;
 
-pub struct Lexer<'t>  {
+pub struct LexerCore<'t>  {
   token_matcher: AhoCorasick,
   /// A cursor pointing to the start of the next token to be tokenized.
   start: usize,
   text: &'t str,
 }
 
-impl<'t> Lexer<'t> {
+impl<'t> LexerCore<'t> {
 
   pub fn new(text: &'t str) -> Self {
     let token_matcher = AhoCorasickBuilder::new()
         .anchored(true)
-        .auto_configure(TOKENS)
+        .auto_configure(&TOKENS)
         .match_kind(MatchKind::LeftmostLongest)
         .build(TOKENS);
 
-    Lexer{
+    LexerCore {
       token_matcher,
       start: 0,
       text
@@ -158,8 +187,11 @@ impl<'t> Lexer<'t> {
           Err(Token::Error(format!("Unexpected token: {}", &self.text[error_start..error_end])))
 
         } else {
+          let start = self.start;
+          let end = self.start + token.end();
+          self.start = end;
           Ok(interned(
-            &self.text[self.start..self.start + token.end()]
+            &self.text[start..end]
           ))
         }
       }
@@ -169,9 +201,6 @@ impl<'t> Lexer<'t> {
 
   /// Processes matches resulting from `regex.find(&self.text[self.start..])`, updating `self.start` appropriately.
   fn get_match(&mut self, found: Option<RegexMatch>) -> Result<InternedString, Token> {
-    // if found.is_none() {
-    //   return Err(Token::Error("Failed to lex token.".to_string()));
-    // }
 
     match found {
 
@@ -185,8 +214,11 @@ impl<'t> Lexer<'t> {
           Err(Token::Error(format!("Unexpected token: {}", &self.text[error_start..error_end])))
 
         } else {
+          let start = self.start;
+          let end = self.start + token.end();
+          self.start = end;
           Ok(interned(
-            &self.text[self.start..self.start + token.end()]
+            &self.text[start..end]
           ))
         }
       } // end found match
@@ -202,7 +234,7 @@ impl<'t> Lexer<'t> {
 
 }
 
-impl<'t> Iterator for Lexer<'t> {
+impl<'t> Iterator for LexerCore<'t> {
   type Item = Token;
 
   // todo: Decide if we want to automatically convert leaves to Atoms, in which case we only need three `Token`
@@ -212,6 +244,9 @@ impl<'t> Iterator for Lexer<'t> {
     // Eat whitespace.
     let stripped = self.text[self.start..].trim_start();
     self.start = self.text.len() - stripped.len();
+
+    // todo: Eat EOL comments.
+
     // Empty state
     if self.start == self.text.len() {
       return None;

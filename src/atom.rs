@@ -19,15 +19,8 @@ use rug::{
 
 
 use crate::{
-  context::{
-    Context,
-    InternedString
-  },
-  attributes::{
-    Attribute,
-    Attributes
-  },
-  formatter::ExpressionFormatter
+  formatter::ExpressionFormatter,
+  interner::{interned_static, InternedString}
 };
 
 #[derive(Clone, PartialEq, IntoStaticStr)]
@@ -86,16 +79,6 @@ impl Atom {
     match self {
       Atom::Integer(_)
       | Atom::Real(_) => true,
-      _ => false,
-    }
-  }
-
-  pub fn is_numeric_function(&self, context: &mut Context) -> bool {
-    match self.head() {
-      Atom::Symbol(name) => {
-        let record = context.get_symbol(name);
-        record.attributes.numeric_function()
-      },
       _ => false,
     }
   }

@@ -12,7 +12,7 @@ use crate::context::Context;
 pub type BuiltinFn = fn(Atom, Context) -> Atom;
 
 
-pub fn register_builtins(context: &mut Context) {
+pub fn register_builtins(_context: &mut Context) {
 
 }
 

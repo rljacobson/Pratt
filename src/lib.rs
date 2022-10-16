@@ -5,6 +5,7 @@ mod context;
 mod builtins;
 mod parsing;
 mod logging;
+mod interner;
 
 pub fn add(left: usize, right: usize) -> usize {
     left + right

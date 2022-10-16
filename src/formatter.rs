@@ -7,13 +7,12 @@ own custom formatting function stored in the `Context`, which the formatter take
 parent expressions can affect how child expressions are formatted.
 
 */
+#![allow(dead_code)]
 
 
-
-use std::rc::Rc;
 use crate::{
   atom::Atom,
-  context::Context
+  interner::resolve_str
 };
 
 pub enum FormatStyle {
@@ -23,23 +22,19 @@ pub enum FormatStyle {
 }
 
 // todo: Make an expression formatter.
-pub struct ExpressionFormatter {
-  context: Rc<Context>
-}
+pub struct ExpressionFormatter {}
 
 impl ExpressionFormatter {
 
-  pub fn new(context: Rc<Context>) -> ExpressionFormatter {
-    ExpressionFormatter{
-      context
-    }
+  pub fn new() -> ExpressionFormatter {
+    ExpressionFormatter{}
   }
 
   pub fn format(&self, expression: Atom) -> String {
     match expression {
 
       Atom::String(s)           => {
-        format!("\"{}\"", self.context.resolve_str(s))
+        format!("\"{}\"", resolve_str(s))
       }
 
       Atom::Integer(n)          => {
@@ -51,12 +46,12 @@ impl ExpressionFormatter {
       }
 
       Atom::Symbol(name) => {
-        format!("{}", self.context.resolve_str(name))
+        format!("{}", resolve_str(name))
       }
 
       Atom::SExpression(children) => {
         let mut child_iter = children.iter();
-        let mut head       = self.format(child_iter.next().unwrap().clone());
+        let head           = self.format(child_iter.next().unwrap().clone());
         let rest           = child_iter.map(|e| self.format(e.clone())).collect::<Vec<_>>().join(", ");
 
         format!("{}[{}]", head, rest)
@@ -65,6 +60,11 @@ impl ExpressionFormatter {
   }
 }
 
+impl Default for ExpressionFormatter{
+  fn default() -> Self {
+    ExpressionFormatter{}
+  }
+}
 
 #[cfg(test)]
 mod tests {

@@ -12,7 +12,7 @@ Thus, the operator table is a `HashMap` from `String` to `Operator`.
 #![allow(dead_code)]
 
 use std::collections::HashMap;
-use crate::context::{Context, InternedString};
+use crate::interner::{interned_static, InternedString};
 
 
 #[allow(unused_imports)]
@@ -78,7 +78,7 @@ pub enum Operator {
   },
 
   /// Operators with a parenthesized middle argument: `a?b:c`.
-  /// Note: In this implementation, all parts are required nonempty.
+  /// Note: In this implementation, we allow the middle argument to be empty.
   Ternary{
     name: InternedString,
     precedence: i32,
@@ -244,7 +244,7 @@ impl Operator {
   /// a database dynamically.
   fn associativity(&self) -> Associativity {
     match self {
-      | Operator::Indexing { associativity, .. }
+
       | Operator::BinaryInfix { associativity, .. }
       | Operator::Ternary { associativity, .. }
       | Operator::OptionalTernary { associativity, .. }
@@ -257,6 +257,8 @@ impl Operator {
         // Setting Postfix's associativity to null makes its right binding power -1, preventing it from taking an
         // expression on the RHS.
       | Operator::Postfix { .. }
+      // Indexing acts like an infix operator on the left and a postfix operator on the right.
+      | Operator::Indexing { .. }
       | Operator::Matchfix { .. }
       | Operator::NullaryLeaf { .. }  => Associativity::Null,
     }
@@ -316,156 +318,157 @@ impl Operator {
 // Todo: have this read from an external database.
 /// Read in a list of operators and their syntactic properties and generate a `left_operator_table` and
 /// `null_operator_table` for use in parsing.
-pub(crate) fn get_operator_table(context: &mut Context) -> OperatorTables {
+pub(crate) fn get_operator_tables() -> OperatorTables {
   let OPERATORS: &[Operator] = &[
 
     Operator::Postfix {
-      name: context.interned_static("BlankSequence"),
+      name: interned_static("BlankSequence"),
       precedence: 160,
-      l_token: context.interned_static("___"),
+      l_token: interned_static("___"),
     },
 
     Operator::Postfix {
-      name: context.interned_static("Sequence"),
+      name: interned_static("Sequence"),
       precedence: 160,
-      l_token: context.interned_static("__"),
+      l_token: interned_static("__"),
     },
 
     Operator::Postfix {
-      name: context.interned_static("Blank"),
+      name: interned_static("Blank"),
       precedence: 160,
-      l_token: context.interned_static("_"),
+      l_token: interned_static("_"),
     },
 
     Operator::Indexing {
-      name: context.interned_static("Part"),
+      name: interned_static("Part"),
       precedence: 160,
       associativity: Associativity::Left,
-      l_token: context.interned_static("[["),
-      o_token: context.interned_static("]]"),
+      l_token: interned_static("[["),
+      o_token: interned_static("]]"),
     },
 
     Operator::Indexing {
-      name: context.interned_static("Construct"),
+      name: interned_static("Construct"),
       precedence: 160,
-      associativity: Associativity::Left,
-      l_token: context.interned_static("["),
-      o_token: context.interned_static("]"),
+      associativity: Associativity::Null,
+      l_token: interned_static("["),
+      o_token: interned_static("]"),
     },
 
     Operator::BinaryInfix {
-      name: context.interned_static("Power"),
+      name: interned_static("Power"),
       precedence: 150,
       associativity: Associativity::Right,
-      l_token: context.interned_static("^")
+      l_token: interned_static("^")
     },
 
     // Unary Minus
     Operator::Prefix {
-      name: context.interned_static("Minus"),
+      name: interned_static("Minus"),
       precedence: 140,
-      n_token: context.interned_static("-")
+      n_token: interned_static("-")
     },
 
     Operator::BinaryInfix {
-      name: context.interned_static("Times"),
+      name: interned_static("Times"),
       precedence: 130,
       associativity: Associativity::Full,
-      l_token: context.interned_static("*")
+      l_token: interned_static("*")
     },
 
     Operator::BinaryInfix {
-      name: context.interned_static("Divide"),
+      name: interned_static("Divide"),
       precedence: 130,
       associativity: Associativity::Left,
-      l_token: context.interned_static("/")
+      l_token: interned_static("/")
     },
 
     Operator::BinaryInfix {
-      name: context.interned_static("Subtract"),
+      name: interned_static("Subtract"),
       precedence: 120,
       associativity: Associativity::Left,
-      l_token: context.interned_static("-")
+      l_token: interned_static("-")
     },
 
     Operator::BinaryInfix {
-      name: context.interned_static("Plus"),
+      name: interned_static("Plus"),
       precedence: 110,
       associativity: Associativity::Full,
-      l_token: context.interned_static("+")
+      l_token: interned_static("+")
     },
 
     Operator::BinaryInfix {
-      name: context.interned_static("SameQ"),
+      name: interned_static("SameQ"),
       precedence: 90,
       associativity: Associativity::Non,
-      l_token: context.interned_static("=="),
+      l_token: interned_static("=="),
     },
 
     Operator::OptionalTernary {
-      name: context.interned_static("Set"),
+      name: interned_static("Set"),
       precedence: 80,
       associativity: Associativity::Right,
-      l_token: context.interned_static("="),
-      o_token: context.interned_static("/;")
+      l_token: interned_static("="),
+      o_token: interned_static("/;")
     },
 
     Operator::OptionalTernary {
-      name: context.interned_static("UpSet"),
+      name: interned_static("UpSet"),
       precedence: 80,
       associativity: Associativity::Right,
-      l_token: context.interned_static("^="),
-      o_token: context.interned_static("/;")
+      l_token: interned_static("^="),
+      o_token: interned_static("/;")
     },
 
     Operator::OptionalTernary {
-      name: context.interned_static("SetDelayed"),
+      name: interned_static("SetDelayed"),
       precedence: 80,
       associativity: Associativity::Right,
-      l_token: context.interned_static(":="),
-      o_token: context.interned_static("/;")
+      l_token: interned_static(":="),
+      o_token: interned_static("/;")
     },
 
     Operator::OptionalTernary {
-      name: context.interned_static("UpSetDelayed"),
+      name: interned_static("UpSetDelayed"),
       precedence: 80,
       associativity: Associativity::Right,
-      l_token: context.interned_static("^:="),
-      o_token: context.interned_static("/;")
+      l_token: interned_static("^:="),
+      o_token: interned_static("/;")
     },
 
     Operator::BinaryInfix {
-      name: context.interned_static("Unset"),
+      name: interned_static("Unset"),
       precedence: 80,
       associativity: Associativity::Non,
-      l_token: context.interned_static("=."),
+      l_token: interned_static("=."),
     },
 
     Operator::BinaryInfix {
-      name: context.interned_static("Sequence"),
+      name: interned_static("Sequence"),
       precedence: 60,
       associativity: Associativity::Full,
-      l_token: context.interned_static(",")
+      l_token: interned_static(",")
     },
 
     Operator::Postfix {
-      name: context.interned_static("ExpresionList"),
+      name: interned_static("ExpresionList"),
       precedence: 50,
-      l_token: context.interned_static(";")
+      l_token: interned_static(";")
     },
 
     Operator::Matchfix {
-      name: context.interned_static("Sequence"), // A sequence of one expression will automatically be spliced into its parent.
-      precedence: 0,
-      n_token: context.interned_static("("),
-      o_token: context.interned_static(")")
+      name: interned_static("Sequence"), // A sequence of one expression will automatically be spliced into its
+      // parent.
+      precedence: 10,
+      n_token: interned_static("("),
+      o_token: interned_static(")")
     },
 
     Operator::Matchfix {
-      name: context.interned_static("List"),
-      precedence: 0,
-      n_token: context.interned_static("{"),
-      o_token: context.interned_static("}")
+      name: interned_static("List"),
+      precedence: 10,
+      n_token: interned_static("{"),
+      o_token: interned_static("}")
     },
   ];
 

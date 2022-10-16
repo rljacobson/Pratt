@@ -9,17 +9,14 @@ created the symbol and its definitions would not be retained.
 
 
 */
+#![allow(dead_code)]
 
-use std::cell::RefCell;
+
 use std::collections::HashMap;
-use std::iter::Peekable;
-use string_interner::StringInterner;
-use string_interner::symbol::SymbolU32;
 
 use crate::{
   atom::{
-    Atom,
-    static_symbol
+    Atom
   },
   attributes::{
     Attributes,
@@ -30,29 +27,23 @@ use crate::{
     register_builtins
   },
 };
-use crate::parsing::{Lexer, parse};
+use crate::interner::{interned_static, InternedString, resolve_str};
+// use crate::parsing::{Lexer, parse};
 
-
-pub type InternedString = SymbolU32;
 
 
 pub struct Context{
   // todo: Should there be a context path object?
   name   : InternedString,
   symbols: HashMap<InternedString, SymbolRecord>,
-  /// This interner is currently not thread safe.
-  interner: RefCell<StringInterner>,
 }
 
 impl Context {
 
   pub fn new_global_context() -> Context {
-    let mut interner = StringInterner::default();
-    let name = interner.interned_static("Global");
     let mut context = Context{
-      name,
+      name: interned_static("Global"),
       symbols: HashMap::new(),
-      interner: RefCell::new(interner)
     };
 
     register_builtins(&mut context);
@@ -71,16 +62,16 @@ impl Context {
 
   /// This method does not check for read-only! Only use for registering built-ins.
   pub(crate) fn set_down_value_attribute(&mut self, symbol: InternedString, value: SymbolValue, attributes: Attributes) {
-    let mut record = self.get_symbol(symbol);
+    let record = self.get_symbol(symbol);
     record.down_values.push(value);
     record.attributes.update(attributes);
   }
 
   pub fn set_attribute(&mut self, symbol: InternedString, attribute: Attribute) -> Result<(), String> {
-    let mut record = self.get_symbol(symbol);
+    let record = self.get_symbol(symbol);
 
     if record.attributes.attributes_read_only() {
-      Err(format!("Symbol {} has read-only attributes", self.resolve_str(symbol)))
+      Err(format!("Symbol {} has read-only attributes", resolve_str(symbol)))
     } else {
       record.attributes.set(attribute);
       Ok(())
@@ -91,7 +82,7 @@ impl Context {
     let record = self.get_symbol(symbol);
 
     if record.attributes.read_only() {
-      Err(format!("Symbol {} is read-only", self.resolve_str(symbol)))
+      Err(format!("Symbol {} is read-only", resolve_str(symbol)))
     } else {
       record.down_values.push(value);
       Ok(())
@@ -99,10 +90,10 @@ impl Context {
   }
 
   pub fn set_up_value(&mut self, symbol: InternedString, value: SymbolValue) -> Result<(), String> {
-    let mut record = self.get_symbol(symbol);
+    let record = self.get_symbol(symbol);
 
     if record.attributes.read_only() {
-      Err(format!("Symbol {} is read-only", self.resolve_str(symbol)))
+      Err(format!("Symbol {} is read-only", resolve_str(symbol)))
     } else {
       record.up_values.push(value);
       Ok(())
@@ -110,10 +101,10 @@ impl Context {
   }
 
   pub fn set_own_value(&mut self, symbol: InternedString, value: SymbolValue) -> Result<(), String> {
-    let mut record = self.get_symbol(symbol);
+    let record = self.get_symbol(symbol);
 
     if record.attributes.read_only() {
-      Err(format!("Symbol {} is read-only", self.resolve_str(symbol)))
+      Err(format!("Symbol {} is read-only", resolve_str(symbol)))
     } else {
       record.own_values.push(value);
       Ok(())
@@ -121,10 +112,10 @@ impl Context {
   }
 
   pub fn set_sub_value(&mut self, symbol: InternedString, value: SymbolValue) -> Result<(), String> {
-    let mut record = self.get_symbol(symbol);
+    let record = self.get_symbol(symbol);
 
     if record.attributes.read_only() {
-      Err(format!("Symbol {} is read-only", self.resolve_str(symbol)))
+      Err(format!("Symbol {} is read-only", resolve_str(symbol)))
     } else {
       record.sub_values.push(value);
       Ok(())
@@ -134,9 +125,9 @@ impl Context {
   // todo: Not especially efficient if the symbol was never defined.
   pub fn clear_symbol(&mut self, symbol: InternedString) -> Result<(), String> {
     { // Scope for record
-      let mut record = self.get_symbol(symbol);
+      let record = self.get_symbol(symbol);
       if record.attributes.read_only() || record.attributes.protected() {
-        return Err(format!("Symbol {} is read-only", self.resolve_str(symbol)))
+        return Err(format!("Symbol {} is read-only", resolve_str(symbol)))
       }
     }
     self.symbols.remove(&symbol) ;
@@ -164,33 +155,6 @@ impl Context {
     }
   }
 */
-
-  // endregion
-
-  // region String Interning Methods
-
-  pub fn interned(&mut self, string: &str) -> InternedString {
-    self.interner.borrow_mut().get_or_intern(string)
-  }
-
-
-  pub fn interned_static(&mut self, string: &'static str) -> InternedString {
-    self.interner.borrow_mut().get_or_intern_static(string)
-  }
-
-
-  pub fn get_interned(&self, string: &str) -> Option<InternedString> {
-    self.interner.borrow().get(string)
-  }
-
-  pub fn resolve_str(&self, symbol: InternedString) -> &'static str {
-    self.interner.borrow().resolve(symbol).unwrap()
-  }
-
-  // Does not automatically unwrap the resolved `&str`.
-  pub fn resolve_str_checked(&self, symbol: InternedString) -> Option<&'static str> {
-    self.interner.borrow().resolve(symbol)
-  }
 
   // endregion
 

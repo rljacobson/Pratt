@@ -4,7 +4,6 @@ interner library.
 
 */
 
-use lazy_static::lazy_static;
 use string_interner::{
   StringInterner,
   symbol::SymbolU32
@@ -13,15 +12,15 @@ use string_interner::{
 pub type InternedString = SymbolU32;
 
 
-static mut STRING_INTERNER: Option<&'static mut StringInterner> = None;
+static mut STRING_INTERNER: Option<Box<StringInterner>> = None;
 
 
 pub fn interned(string: &str) -> InternedString {
   unsafe {
     if STRING_INTERNER.is_none() {
-      STRING_INTERNER = &mut StringInterner::default();
+      STRING_INTERNER = Some(Box::new(StringInterner::default()));
     }
-    STRING_INTERNER.get_or_intern(string)
+    STRING_INTERNER.as_mut().unwrap().get_or_intern(string)
   }
 }
 
@@ -29,9 +28,9 @@ pub fn interned(string: &str) -> InternedString {
 pub fn interned_static(string: &'static str) -> InternedString {
   unsafe {
     if STRING_INTERNER.is_none() {
-      STRING_INTERNER = &mut StringInterner::default();
+      STRING_INTERNER = Some(Box::new(StringInterner::default()));
     }
-    STRING_INTERNER.get_or_intern_static(string)
+    STRING_INTERNER.as_mut().unwrap().get_or_intern_static(string)
   }
 }
 
@@ -39,27 +38,27 @@ pub fn interned_static(string: &'static str) -> InternedString {
 pub fn get_interned(string: &str) -> Option<InternedString> {
   unsafe {
     if STRING_INTERNER.is_none() {
-      STRING_INTERNER = &mut StringInterner::default();
+      STRING_INTERNER = Some(Box::new(StringInterner::default()));
     }
-    STRING_INTERNER.get(string)
+    STRING_INTERNER.as_mut().unwrap().get(string)
   }
 }
 
 pub fn resolve_str(symbol: InternedString) -> &'static str {
   unsafe {
     if STRING_INTERNER.is_none() {
-      STRING_INTERNER = &mut StringInterner::default();
+      STRING_INTERNER = Some(Box::new(StringInterner::default()));
     }
-    STRING_INTERNER.resolve(symbol).unwrap()
+    STRING_INTERNER.as_mut().unwrap().resolve(symbol).unwrap()
   }
 }
 
 pub fn resolve_str_checked(symbol: InternedString) -> Option<&'static str> {
   unsafe {
     if STRING_INTERNER.is_none() {
-      STRING_INTERNER = &mut StringInterner::default();
+      STRING_INTERNER = Some(Box::new(StringInterner::default()));
     }
-    STRING_INTERNER.resolve(symbol)
+    STRING_INTERNER.as_mut().unwrap().resolve(symbol)
   }
 }
 

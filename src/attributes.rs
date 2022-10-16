@@ -5,6 +5,7 @@ The attributes of a function, e.g. `Flat`, `Listable`, ….
 Attributes are implemented as a bitfield.
 
 */
+#![allow(dead_code)]
 
 use std::ops::Index;
 

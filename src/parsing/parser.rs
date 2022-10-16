@@ -48,15 +48,12 @@ The present design differs in several ways:
 //       `null_denotation`, as they differ only in which operator types they match on.
 
 
-use std::{
-  rc::Rc,
-  iter::Peekable
-};
-use lazy_static::lazy_static;
+use std::rc::Rc;
 
 use crate::{
-  context::{
-    Context,
+  interner::{
+    interned_static,
+    resolve_str,
     InternedString
   },
   atom::{
@@ -69,36 +66,39 @@ use crate::{
   parsing::{
     lexer::Token,
     operator::{
-      get_operator_table,
+      get_operator_tables,
       Operator,
-      OperatorTable
+      OperatorTable,
+      OperatorTables
     },
-    Lexer as Prelexer,
-  }
+    Lexer,
+  },
+  parsing::lexer::new_lexer
 };
-use crate::parsing::operator::OperatorTables;
 
-type Lexer<'t> = Peekable<Prelexer<'t>>;
-
-// lazy_static!{
-//   static ref OPERATOR_TABLES: OperatorTables = get_operator_table();
-// }
 
 static mut OPERATOR_TABLES: Option<OperatorTables> = None;
 
 
 pub fn parse(input: &str) -> Result<Atom, ()>{
-  let mut lexer: Lexer = Prelexer::new(input).peekable();
+  let mut lexer: Lexer = new_lexer(input);
+
+  // Initialize operator tables if needed.
+  unsafe {
+    if OPERATOR_TABLES.is_none(){
+      OPERATOR_TABLES = Some(get_operator_tables());
+    }
+  }
 
   // Bootstrap the parsing algorithm...
   match parse_expression(0, &mut lexer) {
 
     Err(token) => {
-      log(Channel::Error, 1, format!("Aborted parse with unexpected: {:?}", &token).as_str());
+      log(Channel::Error, 1, format!("Aborted parse with unexpected: {}", &token).as_str());
       Err(())
     }
 
-    any => any
+    Ok(a) => Ok(a)
 
   }
 }
@@ -121,9 +121,9 @@ fn parse_expression(
   // parsing algorithm. If the expression is a leaf, a generic `NullaryLeaf` operator record is returned.
   // The `NullaryLeaf` is distinguished by having a precedence of 0 and null associativity, as a leaf must.
   let (mut current_root, operator): (Atom, Operator) =
-      { // Scope of null
+      { // Scope of null_table
         let null_table = unsafe {
-          &OPERATOR_TABLES.unwrap().null
+          &OPERATOR_TABLES.as_ref().unwrap().null
         };
         lookup_token(&token, null_table)?
       };
@@ -176,9 +176,33 @@ fn parse_expression(
     let (mut new_root, operator): (Atom, Operator) =
         { // Scope of left_table
           let left_table = unsafe {
-            &OPERATOR_TABLES.unwrap().left
+            &OPERATOR_TABLES.as_ref().unwrap().left
           };
-          lookup_token(&token, left_table)?
+
+          match lookup_token(&token, left_table) {
+            Ok((atom, operator)) => { (atom, operator) }
+            Err(Token::Operator(_)) => {
+              /*
+              If the token doesn't exist in the `left_table`, it could be an o-token ending an ancestor expression
+              farther down in the call stack. There are two ways to handle this case: First, we could just return
+              to the caller with the expression we have built and let them figure out the next token. Second, we
+              could look up the token in a third o-token table in order to distinguish the o-token case from the
+              error case. If the token really is an illegitimate token, it will bubble up and eventually be caught in
+              a branch of control flow that tries to use it as an n-token. Since that error message has already been
+              written, we take the second approach.
+              */
+              break;
+            }
+            Err(t) => {
+              // On the other hand, when a non-operator token is found in the l-token position, that is always an error.
+              log(
+                Channel::Error,
+                1,
+                format!("Expected an operator but found {} instead.", token).as_str()
+              );
+              return Err(t);
+            }
+          }
         };
     // (If we don't find an l-expression, it's an error, because that means we have an expression on the LHS of
     // something that isn't allowed to have something on its LHS!)
@@ -214,18 +238,10 @@ fn parse_expression(
         operator.right_binding_power()
       ).as_str()
     );
-    push_child(&mut new_root, current_root).map_err(|_| token)?;
-
-    /*
-    Question: How do we know the null expression we parsed at the top of this function is the LHS child of the left
-              token we just found, as opposed to the left token belonging as a RHS child of the null expression?
-    Answer: Because if the left token was supposed to be a RHS child of the null expression, it would have already
-            been parsed in the `null_denotation` method, and we wouldn't be seeing it now.
-    */
 
     log(
       Channel::Debug,
-      1,
+      5,
       format!(
         "Now tying to parse RHS (in LeD). lhs={} root={} op.rbp={}",
         &current_root,
@@ -234,11 +250,20 @@ fn parse_expression(
       ).as_str()
     );
 
+    push_child(&mut new_root, current_root).map_err(|_| token.clone())?;
+
+    /*
+    Question: How do we know the null expression we parsed at the top of this function is the LHS child of the left
+              token we just found, as opposed to the left token belonging as a RHS child of the null expression?
+    Answer: Because if the left token was supposed to be a RHS child of the null expression, it would have already
+            been parsed in the `null_denotation` method, and we wouldn't be seeing it now.
+    */
+
     // STEP 4.3: Parse the expressions that form the RHS of this left token.
     // The `current_root` will become the LHS, as we push both `current_root` and the RHS onto `new_root` as
     // children. The `new_root` then becomes `current_root`, and we repeat the process of parsing left tokens.
     left_denotation(&mut new_root, &operator, lexer)
-        .map_err(|_| token)? ;
+        .map_err(|_| token.clone())? ;
 
     /*
     Question: What is the point of having both `null_denotation` and `left_denotation` methods instead of just one
@@ -264,14 +289,13 @@ fn null_denotation(expression: &mut Atom, operator: &Operator, lexer: &mut Lexer
                    -> Result<(), ()> {
   // For tokens that just don't take anything on their RHS (because they're leaf nodes), do nothing.
   // This isn't strictly necessary, because the logic below would eventually return anyway.
-  // todo: It isn't clear if these two conditions are ever not simultaneously satisfied.
-  if operator.n_token().is_none() || operator.right_binding_power() <= 0{
+  if operator.n_token().is_none() {
     return Ok(());
   }
 
-  /// We now parse a brand-new expression, which is allowed to be made up of an operator with precedence no greater
-  /// than our own right binding power. (If it were greater, we would be parsed as the LHS of that operator by that
-  /// operator rather than us parsing it as our own RHS.)
+  // We now parse a brand-new expression, which is allowed to be made up of an operator with precedence no greater
+  // than our own right binding power. (If it were greater, we would be parsed as the LHS of that operator by that
+  // operator rather than us parsing it as our own RHS.)
   match parse_expression(operator.right_binding_power(), lexer) {
     // The nonempty case
     Ok(child_expression) => {
@@ -352,6 +376,11 @@ fn expect(expected_token: InternedString, lexer: &mut Lexer) -> Result<(), ()> {
   match consume_token(lexer) {
 
     Token::Operator(t) if t==expected_token => {
+      log(
+        Channel::Debug,
+        5,
+        format!("Consuming the expected token {}", resolve_str(expected_token)).as_str()
+      );
       Ok(())
     }
 
@@ -370,6 +399,11 @@ fn optional_expect(expected_token: InternedString, lexer: &mut Lexer) -> bool {
   match lexer.peek() {
 
     Some(Token::Operator(token)) if *token == expected_token => {
+      log(
+        Channel::Debug,
+        5,
+        format!("Consuming the optional token {}", resolve_str(expected_token)).as_str()
+      );
       // Consume what we peeked.
       lexer.next();
       true
@@ -388,55 +422,47 @@ fn optional_expect(expected_token: InternedString, lexer: &mut Lexer) -> bool {
 fn left_denotation(root: &mut Atom, operator: &Operator, lexer: &mut Lexer)
                    -> Result<(), ()>{
 
-  // There is a special case of the Ternary operator whose right binding power applies only to its RHS
-  // argument, not to its middle argument, which is treated as if it were parenthesized. For these operators,
-  // we first parse the parenthesized middle expression before proceeding to the RHS. As elsewhere,
-  // we use a match statement to emphasize that there could be several operators with this property.
+  // Operators that parenthesize their arguments are special cases in the sense that for their second
+  // argument their right binding power is zero regardless of their precedence/left binding power. As we have
+  // elsewhere, we use a match statement to emphasize that there could be several operators with this property.
   match operator {
-    Operator::Ternary{ o_token, .. } => {
+    Operator::Indexing { o_token, .. }
+    | Operator::Ternary{ o_token, .. } => {
       // Note the `previous_binding_power` is 0.
       match parse_expression(0, lexer) {
 
-        // The nonempty case. This is the only case we have in this implementation.
-        Ok(middle_expression) => {
-          push_child(root, middle_expression)?;
-          // Now consume the o_token and proceed as if `Operator::Ternary` were a binary operator.
+        // The nonempty case.
+        Ok(parenthesized_expresion) => {
+          push_child(root, parenthesized_expresion)?;
+          // Now consume the o_token and proceed.
           expect(*o_token, lexer)?;
         }
 
-        // The empty case. For our implementation this is always an error, but nothing says you can't have ternary
-        // operators with empty middle argument.
+        // The empty case. We allow this to be empty in this implementation, but it could just as easily be an error..
         Err(_) => {
-          log(
-            Channel::Error,
-            1,
-            format!(
-              "Expected a new expression but found none. The middle of the left operator {} is not allowed to be \
-                empty.",
-              resolve_str(operator.name())
-            ).as_str()
-          );
-
-          return Err(())
+          // Nothing to push onto the expression, but we still need to consume the o-token.
+          expect(*o_token, lexer)?;
         }
       }
     }
 
+    //
+
     _ => {
-      // No other left operator parenthesizes its middle argument.
+      // No other left operator parenthesizes its second argument.
       /* pass */
     }
   }
 
-  // For tokens that just don't take anything on their RHS (because they're postfix operators), do nothing.
+  // For tokens that just don't take anything on their RHS (e.g. they're postfix operators), do nothing.
   // This isn't strictly necessary, because the logic below would eventually return anyway.
   if operator.right_binding_power() <= 0 {
     return Ok(());
   }
 
-  /// We now parse a brand-new expression, which is allowed to be made up of an operator with precedence no greater
-  /// than our own right binding power. (If it were greater, we would be parsed as the LHS of that operator by that
-  /// operator rather than us parsing it as our own RHS.)
+  // We now parse a brand-new expression, which is allowed to be made up of an operator with precedence no greater
+  // than our own right binding power. (If it were greater, we would be parsed as the LHS of that operator by that
+  // operator rather than us parsing it as our own RHS.)
   match parse_expression(operator.right_binding_power(), lexer) {
 
     // The nonempty case
@@ -451,7 +477,7 @@ fn left_denotation(root: &mut Atom, operator: &Operator, lexer: &mut Lexer)
 
       match operator {
         // In our implementation, Indexing and Postfix are the only cases where the RHS of a left token can be empty.
-        // (Note that `Operator::Postfix` has rbp=-1, which we already returned on. But this is a technicality.)
+        // (Note that both have rbp=-1, which we already returned on. But this is a technicality.)
         // We'll keep this as a match statement just to emphasize that there could be several operator kinds.
         | Operator::Indexing{ .. }
         | Operator::Postfix{ .. } => {
@@ -480,8 +506,8 @@ fn left_denotation(root: &mut Atom, operator: &Operator, lexer: &mut Lexer)
   // `Operator::Ternary` a special case and have already parsed its RHS in the previous step.
   match operator {
     // All *left* operators having a *required* o-token but no third child expression
-    | Operator::Indexing{ o_token, .. }
-    => {
+    // Note: We have already returned on Indexing, but we'll leave it here for illustrative purposes.
+    Operator::Indexing{ o_token, .. } => {
       // The o-token is not optional.
       expect(*o_token, lexer)?
     }
@@ -541,28 +567,31 @@ fn get_current_token<'a>(lexer: &'a mut Lexer) -> Option<&'a Token> {
 
 #[allow(unused_parens)]
 /// Push `child` onto `parent`, applying fix-ups for "Construct", "Sequence", and "Parentheses".
-fn push_child(parent: &mut Atom, child: Atom) -> Result<(), ()> {
+fn push_child(parent: &mut Atom, mut child: Atom) -> Result<(), ()> {
   // Destructure parent…
   return match parent {
-    Atom::SExpression(mut parents_children) => {
-      if Some(&Atom::Symbol(interned_static("Construct"))) == parents_children.first(){
+    Atom::SExpression(parents_children) => {
+      if Atom::Symbol(interned_static("Construct")) == parents_children[0]{
         // To convert `Construct` to the function it's constructing, just remove the head!
         // In this case, `child` is the head of the function being constructed, so we just
         // overwrite the `Construct` head with it.
-        parents_children[0] = child;
+        Rc::get_mut(parents_children).unwrap()[0] = child;
+        // <Vec<Atom> as AsMut<Vec<Atom>>>::as_mut(parents_children)[0] = child;
         return Ok(());
       }
 
       // Destructure the child
-      if let Atom::SExpression(mut children) = child {
-        if Some(&Atom::Symbol(interned_static("Sequence"))) == children.first(){
+      if let Atom::SExpression(ref mut children) = child {
+        if Atom::Symbol(interned_static("Sequence")) == children[0]
+            || Atom::Symbol(interned_static("Parentheses")) == children[0]
+        {
           // Splice in the sequence's children, skipping the head.
-          parents_children.extend(children[1..].iter().cloned());
+          Rc::get_mut(parents_children).unwrap().extend(children[1..].iter().cloned());
           return Ok(());
         }
       }
       // If we get here it's just a normal child of a normal function.
-      parents_children.push(child.clone());
+      Rc::get_mut(parents_children).unwrap().push(child.clone());
       Ok(())
     }
 
@@ -590,8 +619,9 @@ fn lookup_token(token: &Token, table: &OperatorTable) -> Result<(Atom, Operator)
         }
 
         None => {
-          // An `OpToken` should never contain a leaf token, only things that are in the operator table.
-          log(Channel::Error, 1, format!("Unexpected: {:?}", &operator).as_str());
+          // An `OpToken` should never contain a leaf token. However, o-tokens are also not in the operator table, so
+          // this is not necessarily an error.
+          log(Channel::Debug, 5, format!("Not in the expected op table: {}", resolve_str(*operator)).as_str());
           return Err(token.clone());
         }
 
@@ -606,7 +636,7 @@ fn lookup_token(token: &Token, table: &OperatorTable) -> Result<(Atom, Operator)
 
     any_other_token => {
       // This is the leaf node case.
-      let exp = (*any_other_token).try_into_atom().unwrap();
+      let exp = (**any_other_token).clone().try_into_atom().unwrap();
       log(Channel::Debug, 5, format!("Found leaf node: {}", exp).as_str());
       let op = Operator::nullary_leaf();
       Ok((exp, op))
@@ -623,15 +653,32 @@ mod tests {
   use super::*;
 
   #[test]
-  fn function_test() {
-    let text = "3.8*f[1+x, y]";
-    // let text = "f[1+3.8]";
-    // set_verbosity(5);
+  fn simple_test() {
+    let text = "x + 1";
+    set_verbosity(5);
 
     match parse(text) {
 
       Ok(e) => {
-        assert_eq!("Times[3.8, f[Plus[1, x], y]]", e.to_string().as_str());
+        assert_eq!("Plus[x, 1]", e.to_string().as_str());
+        println!("Success: {}", e);
+      },
+
+      Err(_) => assert!(false)
+
+    };
+  }
+
+  #[test]
+  fn function_test() {
+    let text = "3.8*f[1+x, y]";
+    // let text = "f[1+3.8]";
+    set_verbosity(5);
+
+    match parse(text) {
+
+      Ok(e) => {
+        assert_eq!("Times[3.800, f[Plus[1, x], y]]", e.to_string().as_str());
         println!("Success: {}", e);
       },
 
@@ -643,12 +690,13 @@ mod tests {
   #[test]
   fn precedence_test() {
     let text = "3.8*x^2 + 2*x^f[a+b, c*d, e]";
+    set_verbosity(5);
 
     match parse(text) {
 
       Ok(e) => {
         assert_eq!(
-          "Plus[Times[3.8, Power[x, 2]], Times[2, Power[x, f[Plus[a, b], Times[c, d], e]]]]",
+          "Plus[Times[3.800, Power[x, 2]], Times[2, Power[x, f[Plus[a, b], Times[c, d], e]]]]",
           e.to_string().as_str()
         );
         println!("Success: {}", e);
@@ -662,6 +710,7 @@ mod tests {
   #[test]
   fn parentheses_test() {
     let text = "2*(3+a)";
+    set_verbosity(5);
 
     match parse(text) {
 
@@ -682,8 +731,7 @@ mod tests {
   #[test]
   fn unary_minus_test() {
     let text = "2 - 2 + -3 * -4 * f[-5-6] - -7";
-    let expected = "Subtract[2, Plus[2, Minus[Times[3, Minus[Subtract[Times[4, f[Minus[Subtract[5, 6]]]], \
-    Minus[7]]]]]]]";
+    let expected = "Plus[Subtract[2, 2], Subtract[Times[Minus[3], Times[Minus[4], f[Subtract[Minus[5], 6]]]], Minus[7]]]";
     // let text = "2  -3";
     set_verbosity(5);
 
@@ -704,7 +752,7 @@ mod tests {
   /// The parser fixes up artifacts of the parsing process, e.g. "evaluating" `Construct`s, eliding slices, etc.
   fn fixup_test() {
     let text = "a[b, c, d[e, f], g, h]";
-    // set_verbosity(5);
+    set_verbosity(5);
 
     match parse(text) {
 
