@@ -10,7 +10,7 @@ edition = "2021"
 string-interner = "0.14.0"
 strum           = "0.24"  # Derives for Display, IntoStaticStr for `*Kind`-
 strum_macros    = "0.24"  # style enums.
-regex           = "1.6.0" # Lexer
+regex           = {version = "1.6.0", default-features = false, features = ["perf", "std"]} # Lexer
 aho-corasick    = "0.7.19"# Lexer
 lazy_static     = "1.4.0" # Used in logger.
 yansi           = "0.5.1" # ANSI color support for logging to terminal.
