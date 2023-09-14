@@ -8,28 +8,19 @@ use std::{
   fmt::{Display, Formatter},
   cmp::min
 };
-use std::iter::Peekable;
 
 use lazy_static::lazy_static;
-use aho_corasick::{AhoCorasickBuilder, AhoCorasick, MatchKind};
+use aho_corasick::{AhoCorasickBuilder, AhoCorasick, MatchKind, StartKind};
 use regex::{
   Regex,
   Match as RegexMatch
 };
-use rug::{
-  Integer as BigInteger,
-  Float as BigFloat,
-  ops::{CompleteRound},
-  Complete
-};
-use strum_macros::AsRefStr;
 
 use crate::{
-  atom::Atom,
-  interner::{
-    interned,
-    resolve_str,
-    InternedString
+  ast::Atom,
+  interned_string::{
+    intern_str,
+    IString,
   }
 };
 
@@ -37,16 +28,7 @@ use crate::{
 To have dynamic lexing of operators, the lexer needs facilities for adding and removing operators.
 */
 
-/// We want the Lexer to be peekable.
-pub type Lexer<'t> = Peekable<LexerCore<'t>>;
-
-// Todo: This free function is a little awkward.
-pub fn new_lexer(input: &str) -> Lexer {
-  LexerCore::new(input).peekable()
-}
-
-
-// Keep in sync with numbering in `TOKENS`.
+// Keep in sync with numbering in `REGEXES`.
 const STRING_LITERAL_IDX: usize = 0;
 const REAL_IDX          : usize = 1;
 const INTEGER_IDX       : usize = 2;
@@ -56,7 +38,7 @@ const WHITESPACE_IDX    : usize = 5;
 
 lazy_static! {
   pub static ref REGEXES: [Regex; 6] = [
-    Regex::new(r#""(?:[^"]|\\")*""#).unwrap(),    //  0. StringLiteral  todo: Make strings more sophisticated.
+    Regex::new(r#""(?:[^"]|\\")*""#).unwrap(),    //  0. StringLiteral  ToDo: Make strings more sophisticated.
     Regex::new(r"[0-9]+\.[0-9]+").unwrap(),       //  1. Real
     Regex::new(r"[0-9]+").unwrap(),               //  2. Integer
     Regex::new(r"[a-zA-Z][a-zA-Z0-9]*").unwrap(), //  3. Identifiers,
@@ -65,44 +47,14 @@ lazy_static! {
   ];
 }
 
-static TOKENS: [&'static str; 26] = [
-  r"___", //  6. BlankSequence
-  r"==",  //  7. SameQ
-  r"^=",  //  8. UpSet
-  r":=",  //  9. SetDelayed
-  r"^:=", // 10. UpSetDelayed
-  r"=.",  // 11. Clear
-  r"/;",  // 12. Condition
-  r"[[",  // 13. OpenIndex
-  r"]]",  // 14. CloseIndex
-  r"__",  // 15. Sequence
-  r"[",   // 16. Construct
-  r"]",   // 17. CloseConstruct
-  r"√",   // 18. Root
-  r"^",   // 19. Power
-  r"-",   // 20. Minus or Subtract
-  r"*",   // 21. Times
-  r"/",   // 22. Divide
-  r"+",   // 23. Plus
-  r"=",   // 24. Set
-  r",",   // 25. Sequence
-  r"(",   // 26. OpenParenthesis
-  r")",   // 27. CloseParenthesis
-  r"_",   // 28. Blank
-  r";",   // 29. Statement separator
-  r"{",   // 30. OpenCurlyBrace
-  r"}",   // 31. CloseCurlyBrace
-];
-
-
 // The Lexer supplies `Token` variants to the client code.
-#[derive(Clone, Debug, PartialEq, AsRefStr)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Token {
-  Integer(BigInteger),
-  Operator(InternedString),
-  Real(BigFloat),
-  String(InternedString),
-  Symbol(InternedString),
+  Integer(IString),
+  Operator(IString),
+  Real(IString),
+  String(IString),
+  Symbol(IString),
   Error(String),
 }
 
@@ -110,22 +62,22 @@ impl Display for Token {
   fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
     match self {
       Token::Integer(v) => {
-        write!(f, "{}({})", self.as_ref(), v)
+        write!(f, "Integer({})", v)
       }
       Token::Operator(v) => {
-        write!(f, "{}({})", self.as_ref(), resolve_str(*v))
+        write!(f, "Operator({})", v)
       }
       Token::Real(v) => {
-        write!(f, "{}({})", self.as_ref(), v)
+        write!(f, "Real({})", v)
       }
       Token::String(v) => {
-        write!(f, "{}(\"{}\")", self.as_ref(), resolve_str(*v))
+        write!(f, "String(\"{}\")", v)
       }
       Token::Symbol(v) => {
-        write!(f, "{}({})", self.as_ref(), resolve_str(*v))
+        write!(f, "Symbol({})", v)
       }
       Token::Error(v) => {
-        write!(f, "{}({})", self.as_ref(), v)
+        write!(f, "Error({})", v)
       }
     }
   }
@@ -148,37 +100,47 @@ impl Token {
   }
 }
 
-
-pub struct LexerCore<'t>  {
+pub struct Lexer<'t>  {
   token_matcher: AhoCorasick,
   /// A cursor pointing to the start of the next token to be tokenized.
   start: usize,
-  text: &'t str,
+  text : &'t str,
+  next_token: Option<Token>
 }
 
-impl<'t> LexerCore<'t> {
+impl<'t> Lexer<'t> {
 
-  pub fn new(text: &'t str) -> Self {
+  pub fn new(text: &'t str, tokens: Vec<String>) -> Self {
+    // ToDo: Cache `token_matcher` (make static)
     let token_matcher = AhoCorasickBuilder::new()
-        .anchored(true)
-        .auto_configure(&TOKENS)
+        // .start_kind(StartKind::Anchored)
+        // .auto_configure(&tokens)
         .match_kind(MatchKind::LeftmostLongest)
-        .build(TOKENS);
+        .build(tokens)
+        .unwrap(); // Should be infallible with these parameters.
 
-    LexerCore {
+    Lexer {
       token_matcher,
       start: 0,
-      text
+      text,
+      next_token: None
     }
+  }
+
+  pub fn peek(&mut self) -> Option<Token> {
+    if self.next_token.is_none() {
+      self.next_token = self.next();
+    }
+    return self.next_token.clone()
   }
 
   // This method is a copy+paste, because `aho_corasick::Match` is a different type from `regex::Match`.
   // todo: Factor out this common code the right way.
-  pub(crate) fn get_operator_match(&mut self) -> Result<InternedString, Token> {
-    match self.token_matcher.find(&self.text[self.start..]) {
-      Some(token) => {
+  fn get_operator_match(&mut self) -> Result<IString, Token> {
+    match self.token_matcher.try_find(&self.text[self.start..]) {
 
-        if token.start() != 0{
+      Ok(Some(token)) => {
+        if token.start() != 0 {
           // Token must start at beginning of the string.
           let error_start: usize = self.start;
           self.start += token.start(); // Skip over this unrecognized token.
@@ -190,22 +152,30 @@ impl<'t> LexerCore<'t> {
           let start = self.start;
           let end = self.start + token.end();
           self.start = end;
-          Ok(interned(
+          Ok(intern_str(
             &self.text[start..end]
           ))
         }
       }
-      None => Err(Token::Error("No matching tokens found.".to_string()))
+
+      Ok(_) => {
+        Err(Token::Error("Unrecognized operator.".to_string()))
+      }
+
+      Err(e) => Err(
+        Token::Error(format!("No matching tokens found: {}", e))
+      )
+
     }
   }
 
   /// Processes matches resulting from `regex.find(&self.text[self.start..])`, updating `self.start` appropriately.
-  fn get_match(&mut self, found: Option<RegexMatch>) -> Result<InternedString, Token> {
+  fn get_match(&mut self, found: Option<RegexMatch>) -> Result<IString, Token> {
 
     match found {
 
       Some(token) => {
-        if token.start() != 0{
+        if token.start() != 0 {
           // Token must start at beginning of the string.
           let error_start: usize = self.start;
           self.start += token.start(); // Skip over this unrecognized token.
@@ -217,7 +187,7 @@ impl<'t> LexerCore<'t> {
           let start = self.start;
           let end = self.start + token.end();
           self.start = end;
-          Ok(interned(
+          Ok(intern_str(
             &self.text[start..end]
           ))
         }
@@ -234,23 +204,29 @@ impl<'t> LexerCore<'t> {
 
 }
 
-impl<'t> Iterator for LexerCore<'t> {
+impl<'t> Iterator for Lexer<'t> {
   type Item = Token;
 
   // todo: Decide if we want to automatically convert leaves to Atoms, in which case we only need three `Token`
-  //       variants: Error(String), Operator(InternedString), Leaf(Atom). Leaving as a token allows parsing based on
-  //       leaf type, which is required for the hypothetical future.
+  //       variants: Error(String), Operator(IString), Leaf(Atom). Leaving as a token allows parsing based on
+  //       leaf type.
   fn next(&mut self) -> Option<Self::Item> {
+    if let Some(t) = self.next_token.take() {
+      return Some(t);
+    }
+
     // Eat whitespace.
     let stripped = self.text[self.start..].trim_start();
     self.start = self.text.len() - stripped.len();
 
-    // todo: Eat EOL comments.
+    // Eat EOL comments.
+    _ = self.get_match( REGEXES[EOL_COMMENT_IDX].find(&self.text[self.start..]) );
 
-    // Empty state
+    // Empty text
     if self.start == self.text.len() {
       return None;
     }
+
 
     match self.text[self.start..].as_bytes()[0] {
       b'"' => {
@@ -270,16 +246,12 @@ impl<'t> Iterator for LexerCore<'t> {
         match
           self.get_match(REGEXES[REAL_IDX].find(&self.text[self.start..])) {
           Ok(token) => {
-            Some(Token::Real(BigFloat::parse(resolve_str(token)).unwrap().complete(53)))
+            Some(Token::Real(token))
           },
           Err(_) => {
             Some(
               Token::Integer(
-                BigInteger::parse(
-                  resolve_str(
-                    self.get_match(REGEXES[INTEGER_IDX].find(&self.text[self.start..])).unwrap()
-                  )
-                ).unwrap().complete()
+                self.get_match(REGEXES[INTEGER_IDX].find(&self.text[self.start..])).unwrap()
               )
             )
           }

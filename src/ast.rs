@@ -9,26 +9,15 @@ use std::{
   rc::Rc
 };
 
-use strum_macros::{
-  IntoStaticStr
-};
-use rug::{
-  Integer as BigInteger,
-  Float as BigFloat,
-};
+use crate::interned_string::{interned_static, IString};
 
 
-use crate::{
-  formatter::ExpressionFormatter,
-  interner::{interned_static, InternedString}
-};
-
-#[derive(Clone, PartialEq, IntoStaticStr)]
+#[derive(Clone, PartialEq, Debug)]
 pub enum Atom {
-  String(InternedString),
-  Integer(BigInteger),
-  Real(BigFloat),
-  Symbol(InternedString),
+  String(IString),
+  Integer(IString),
+  Real(IString),
+  Symbol(IString),
   SExpression(Rc<Vec<Atom>>)
 }
 
@@ -42,13 +31,15 @@ impl Atom {
         }
       }
 
-      atom => {
-        static_symbol(atom.into())
-      }
+      Atom::String(_) => {static_symbol("String")}
+      Atom::Integer(_) => {static_symbol("Integer")}
+      Atom::Real(_) => {static_symbol("Real")}
+
+      symbol => symbol.clone()
     }
   }
 
-  pub fn name(&self) -> Option<InternedString> {
+  pub fn name(&self) -> Option<IString> {
     match self {
       Atom::SExpression(_) => {
         match self.head() {
@@ -56,22 +47,8 @@ impl Atom {
           _                  => None
         }
       },
-      Atom::Symbol(name) => Some(*name),
+      Atom::Symbol(name) => Some(name.clone()),
       _                  => None
-    }
-  }
-
-  pub fn is_variable(&self) -> bool {
-    match self.head() {
-      h if h == static_symbol("Blank") => true,
-      _ => false,
-    }
-  }
-
-  pub fn is_sequence_variable(&self) -> bool {
-    match self.head() {
-      h if h == static_symbol("Sequence") || h == static_symbol("BlankSequence") => true,
-      _ => false,
     }
   }
 
@@ -83,31 +60,49 @@ impl Atom {
     }
   }
 
-  /// A formatter knows how to format expressions in a given style. Certain expressions and symbols may have their
-  /// own custom formatting function stored in the `Context`, which the formatter takes into account. What's more,
-  /// parent expressions can affect how child expressions are formatted.
-  pub fn formatted(&self) -> String {
-    let formatter = ExpressionFormatter::default();
-    formatter.format(self.clone())
-  }
-
-  // region Convenience constructor functions
-
   /// We often have a need to create an expression for some standard built-in or stdlib symbol.
   pub fn function_with_str_head(head_str: &'static str) -> Atom {
     Atom::SExpression(Rc::new(vec![static_symbol(head_str)]))
   }
 
   /// We often have a need to create an expression for some standard built-in or stdlib symbol.
-  pub fn function_with_symbolic_head(head: InternedString) -> Atom {
+  pub fn function_with_symbolic_head(head: IString) -> Atom {
     Atom::SExpression(Rc::new(vec![Atom::Symbol(head)]))
   }
-  // endregion
+
 }
 
 impl Display for Atom {
   fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-    write!(f, "{}", self.formatted())
+    // write!(f, "{}", self.formatted())
+    let text = match self {
+
+      Atom::String(s)           => {
+        format!("\"{}\"", s)
+      }
+
+      Atom::Integer(n)          => {
+        format!("{}", n)
+      }
+
+      Atom::Real(r)             => {
+        format!("{:.4}", r)
+      }
+
+      Atom::Symbol(name) => {
+        format!("{}", name)
+      }
+
+      Atom::SExpression(children) => {
+        let mut child_iter = children.iter();
+        let head           = child_iter.next().unwrap().to_string();
+        let rest           = child_iter.map(|e| e.to_string()).collect::<Vec<_>>().join(", ");
+
+        format!("{}[{}]", head, rest)
+      }
+    };
+
+    write!(f, "{}", text)
   }
 }
 

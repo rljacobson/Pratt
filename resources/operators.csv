@@ -7,7 +7,7 @@ Times      | 130       | *    |        |        | F            | I    | 2
 Divide     | 130       | /    |        |        | L            | I    | 2
 Plus       | 120       | +    |        |        | F            | I    | 2
 Subtract   | 125       | -    |        |        | R            | I    | 2
-SameQ		    | 90        | ==   |        |        | N            | I    | 2
+SameQ      | 90        | ==   |        |        | N            | I    | 2
 Set        | 80        | =    |        |        | R            | I    | 2
 UpSet      | 80        | ^=   |        |        | R            | I    | 2
 SetDelayed | 80        | :=   |        |        | R            | I    | 2
@@ -15,4 +15,4 @@ UpSetDelayed | 80      | ^:=  |        |        | R            | I    | 2
 Unset      | 80        | =.   |        |        | R            | I    | 2
 Condition  | 70        | /;   |        |        | N            | I    | 2
 Sequence   | 60        | ,    |        |        | F            | I    | 2
-Parentheses| 50        |      | (      | )      |              | M    | 1
+Parentheses| 50        |      | (      | )      | N            | M    | 1

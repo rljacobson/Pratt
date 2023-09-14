@@ -8,10 +8,8 @@ mod lexer;
 mod operator;
 mod parser;
 
-pub use lexer::{
-  Lexer
-};
-pub use parser::parse;
+pub use lexer::Lexer;
+pub use parser::Parser;
 
 
 #[cfg(test)]
